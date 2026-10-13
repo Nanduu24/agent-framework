@@ -486,20 +486,14 @@ class _MCPHeaderScopedClient:
 class _MCPConnection(Protocol):
     """Normalized MCP connection surface used by MCPTool."""
 
-    @property
-    def client(self) -> Client | None:
-        """Return the high-level Client when this connection has one."""
-        ...
+    """Return the high-level Client when this connection has one."""
+    client: Client | None
 
-    @property
-    def session(self) -> ClientSession:
-        """Return the low-level compatibility session."""
-        ...
+    """Return the low-level compatibility session."""
+    session: ClientSession | None
 
-    @property
-    def is_framework_owned(self) -> bool:
-        """Return whether Agent Framework owns this connection."""
-        ...
+    """Return whether Agent Framework owns this connection."""
+    is_framework_owned: bool
 
     async def call_tool(
         self,
@@ -537,16 +531,8 @@ class _ClientMCPConnection:
 
     def __init__(self, client: Client) -> None:
         self.client = client
-
-    @property
-    def session(self) -> ClientSession:
-        """Return the Client's low-level compatibility session."""
-        return self.client.session
-
-    @property
-    def is_framework_owned(self) -> bool:
-        """Return True because Agent Framework owns the Client."""
-        return True
+        self.is_framework_owned = True
+        self.session = None
 
     async def call_tool(
         self,
@@ -578,9 +564,10 @@ class _ClientMCPConnection:
             cursor=params.cursor if params is not None else None,
         )
 
-    async def set_logging_level(self, level: Any) -> None:
-        """Set the legacy logging level through the underlying session."""
-        await self.session.set_logging_level(level)  # pyright: ignore[reportDeprecated]
+    @deprecated("The logging capability is deprecated as of 2026-07-28 (SEP-2577).", category=DeprecationWarning)
+    async def set_logging_level(self, _level: Any) -> None:
+        """Using ``Client`` sets the logging at the constructor level."""
+        return
 
     async def read_resource(self, uri: str) -> types.ReadResourceResult:
         """Read a resource through the high-level Client while honoring server cache hints."""
@@ -590,15 +577,10 @@ class _ClientMCPConnection:
 class _SessionMCPConnection:
     """MCP connection backed by a low-level ClientSession."""
 
-    client: None = None
-
     def __init__(self, session: ClientSession) -> None:
         self.session = session
-
-    @property
-    def is_framework_owned(self) -> bool:
-        """Return False because the caller owns the session."""
-        return False
+        self.is_framework_owned = False
+        self.client = None
 
     async def call_tool(
         self,
@@ -628,6 +610,8 @@ class _SessionMCPConnection:
 
     async def set_logging_level(self, level: Any) -> None:
         """Set the legacy logging level directly through the session."""
+        if self.session.initialize_result is None:
+            return
         await self.session.set_logging_level(level)  # pyright: ignore[reportDeprecated]
 
     async def read_resource(self, uri: str) -> types.ReadResourceResult:
@@ -1023,10 +1007,10 @@ class MCPTool:
         sampling_max_tokens: int | None = _DEFAULT_SAMPLING_MAX_TOKENS,
         sampling_max_requests: int | None = _DEFAULT_SAMPLING_MAX_REQUESTS,
         additional_properties: dict[str, Any] | None = None,
+        task_options: Any | None = None,
         additional_tool_argument_names: Sequence[str] | Mapping[str, Sequence[str]] | None = None,
         use_progressive_disclosure: bool = False,
         always_load: Collection[str] | None = None,
-        task_options: Any = None,
         *,
         max_host_payload_size_bytes: int | None = _DEFAULT_MCP_HOST_PAYLOAD_SIZE_BYTES,
         tool_result_content: MCPToolResultContentMode = "structured_first",
@@ -2293,13 +2277,12 @@ class MCPTool:
                     await self.load_prompts()
                 self._prompts_loaded = True
 
-            if log_level is not None:
+            if log_level is not None and self._supports_logging is not False:
                 connection = self._require_connection()
-                if connection.session.initialize_result is not None and self._supports_logging is not False:
-                    try:
-                        await connection.set_logging_level(log_level)
-                    except Exception as exc:
-                        logger.warning("Failed to set log level to %s", logger.level, exc_info=exc)
+                try:
+                    await connection.set_logging_level(log_level)
+                except Exception as exc:
+                    logger.warning("Failed to set log level to %s", logger.level, exc_info=exc)
         except (Exception, asyncio.CancelledError):
             try:
                 await self._close_on_owner()
@@ -2849,7 +2832,7 @@ class MCPTool:
 
             for tool in tool_list.tools:
                 task_support = getattr(getattr(tool, "execution", None), "task_support", None)
-                if task_support == "required":
+                if task_support is not None:
                     logger.warning(
                         "Skipping MCP tool %r because it requires the Tasks extension, "
                         "which MCP Python SDK 2.2 does not implement.",
@@ -3376,8 +3359,8 @@ class MCPStdioTool(MCPTool):
         sampling_max_tokens: int | None = _DEFAULT_SAMPLING_MAX_TOKENS,
         sampling_max_requests: int | None = _DEFAULT_SAMPLING_MAX_REQUESTS,
         additional_properties: dict[str, Any] | None = None,
+        task_options: Any | None = None,
         additional_tool_argument_names: Sequence[str] | Mapping[str, Sequence[str]] | None = None,
-        task_options: Any = None,
         max_host_payload_size_bytes: int | None = _DEFAULT_MCP_HOST_PAYLOAD_SIZE_BYTES,
         tool_result_content: MCPToolResultContentMode = "structured_first",
         **kwargs: Any,

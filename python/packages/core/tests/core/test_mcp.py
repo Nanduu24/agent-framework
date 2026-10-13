@@ -7511,10 +7511,11 @@ async def test_connect_sets_logging_level_when_logger_level_is_set():
     with (
         patch("mcp.Client", return_value=sdk_client) as mock_client_class,
         patch.object(logger, "level", logging.DEBUG),  # Set logger level to DEBUG
+        pytest.warns(DeprecationWarning, match="The logging capability is deprecated"),
     ):
         async with tool:
             assert mock_client_class.call_args.kwargs["log_level"] == "debug"
-            mock_session.set_logging_level.assert_awaited_once_with("debug")
+            mock_session.set_logging_level.assert_not_awaited()
 
 
 async def test_connect_does_not_set_logging_level_when_logger_level_is_notset():
@@ -7543,36 +7544,30 @@ async def test_connect_does_not_set_logging_level_when_logger_level_is_notset():
             mock_session.set_logging_level.assert_not_called()
 
 
-async def test_connect_handles_set_logging_level_exception():
-    """Test that connect() handles exceptions from set_logging_level gracefully."""
+async def test_connect_handles_session_set_logging_level_exception():
+    """Test that connect() handles exceptions from a caller-supplied session gracefully."""
 
+    session = _mock_unnegotiated_session(types.ServerCapabilities(logging=types.LoggingCapability()))
+    session.set_logging_level = AsyncMock(side_effect=MCPError(types.INTERNAL_ERROR, "Failed to configure logging"))
     tool = MCPStdioTool(
         name="test_server",
         command="test_command",
-        args=["arg1"],
         load_tools=False,
         load_prompts=False,
+        session=session,
     )
-
-    mock_session = Mock(spec=ClientSession)
-    # Make set_logging_level raise an exception
-    mock_session.set_logging_level = AsyncMock(side_effect=RuntimeError("Server doesn't support logging level"))
-
-    sdk_client = _mock_sdk_client(
-        session=mock_session, capabilities=types.ServerCapabilities(logging=types.LoggingCapability())
-    )
+    tool.is_connected = True
 
     with (
-        patch("mcp.Client", return_value=sdk_client) as mock_client_class,
         patch.object(logger, "level", logging.INFO),  # Set logger level to INFO
         patch.object(logger, "warning") as mock_warning,
     ):
-        async with tool:
-            assert mock_client_class.call_args.kwargs["log_level"] == "info"
-            mock_session.set_logging_level.assert_awaited_once_with("info")
-            mock_warning.assert_called_once()
-            call_args = mock_warning.call_args
-            assert "Failed to set log level" in call_args[0][0]
+        await tool._connect_on_owner()
+
+    session.set_logging_level.assert_awaited_once_with("info")
+    mock_warning.assert_called_once()
+    call_args = mock_warning.call_args
+    assert "Failed to set log level" in call_args[0][0]
 
 
 async def test_connect_does_not_use_legacy_logging_method_for_modern_server() -> None:
